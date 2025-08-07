@@ -1,0 +1,182 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Futuristic Light Mode Colors */
+    --background: 240 8% 98%;
+    --foreground: 240 10% 3.9%;
+    --card: 240 8% 100%;
+    --card-foreground: 240 10% 3.9%;
+    --popover: 240 8% 100%;
+    --popover-foreground: 240 10% 3.9%;
+    --primary: 263 85% 58%;
+    --primary-foreground: 240 8% 98%;
+    --secondary: 240 4.8% 95.9%;
+    --secondary-foreground: 240 5.9% 10%;
+    --muted: 240 4.8% 95.9%;
+    --muted-foreground: 240 3.8% 46.1%;
+    --accent: 240 4.8% 95.9%;
+    --accent-foreground: 240 5.9% 10%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 240 8% 98%;
+    --border: 240 5.9% 90%;
+    --input: 240 5.9% 90%;
+    --ring: 263 85% 58%;
+    --radius: 0.75rem;
+    --gradient-primary: linear-gradient(135deg, #6366f1 0%, #8b5cf6 25%, #a855f7 50%, #c084fc 75%, #e879f9 100%);
+    --gradient-secondary: linear-gradient(135deg, #06b6d4 0%, #3b82f6 50%, #6366f1 100%);
+    --shadow-glow: 0 0 20px rgba(99, 102, 241, 0.15);
+    --shadow-glow-hover: 0 0 30px rgba(99, 102, 241, 0.25);
+  }
+
+  .dark {
+    /* Futuristic Dark Mode Colors */
+    --background: 240 10% 3.9%;
+    --foreground: 240 8% 98%;
+    --card: 240 10% 6%;
+    --card-foreground: 240 8% 98%;
+    --popover: 240 10% 6%;
+    --popover-foreground: 240 8% 98%;
+    --primary: 263 85% 65%;
+    --primary-foreground: 240 10% 3.9%;
+    --secondary: 240 3.7% 15.9%;
+    --secondary-foreground: 240 8% 98%;
+    --muted: 240 3.7% 15.9%;
+    --muted-foreground: 240 5% 64.9%;
+    --accent: 240 3.7% 15.9%;
+    --accent-foreground: 240 8% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 240 8% 98%;
+    --border: 240 3.7% 15.9%;
+    --input: 240 3.7% 15.9%;
+    --ring: 263 85% 65%;
+    --gradient-primary: linear-gradient(135deg, #6366f1 0%, #8b5cf6 25%, #a855f7 50%, #c084fc 75%, #e879f9 100%);
+    --gradient-secondary: linear-gradient(135deg, #06b6d4 0%, #3b82f6 50%, #6366f1 100%);
+    --shadow-glow: 0 0 20px rgba(139, 92, 246, 0.2);
+    --shadow-glow-hover: 0 0 30px rgba(139, 92, 246, 0.3);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  /* Improved scrollbar styling */
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+  
+  ::-webkit-scrollbar-track {
+    background: hsl(var(--muted));
+  }
+  
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--primary) / 0.3);
+    border-radius: 3px;
+  }
+  
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--primary) / 0.5);
+  }
+}
+
+@layer components {
+  /* Futuristic gradient backgrounds */
+  .gradient-primary {
+    background: var(--gradient-primary);
+  }
+  
+  .gradient-secondary {
+    background: var(--gradient-secondary);
+  }
+  
+  .gradient-text {
+    @apply bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 bg-clip-text text-transparent;
+  }
+  
+  /* Glass morphism effect */
+  .glass {
+    @apply backdrop-blur-xl bg-white/10 dark:bg-white/5 border border-white/20 dark:border-white/10;
+  }
+  
+  /* Glow effects */
+  .glow {
+    box-shadow: var(--shadow-glow);
+  }
+  
+  .glow-hover:hover {
+    box-shadow: var(--shadow-glow-hover);
+  }
+  
+  /* Animated border gradient */
+  .border-gradient {
+    @apply relative overflow-hidden;
+  }
+  
+  .border-gradient::before {
+    content: '';
+    @apply absolute inset-0 p-[1px] bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 rounded-lg;
+    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    mask-composite: exclude;
+  }
+  
+  /* Futuristic card styles */
+  .futuristic-card {
+    @apply glass glow-hover transition-all duration-300 hover:scale-[1.02] border-gradient;
+  }
+  
+  /* Enhanced button animations */
+  .btn-futuristic {
+    @apply relative overflow-hidden transition-all duration-300 transform hover:scale-105 active:scale-95;
+  }
+  
+  .btn-futuristic::before {
+    content: '';
+    @apply absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent translate-x-[-100%] skew-x-12 transition-transform duration-700;
+  }
+  
+  .btn-futuristic:hover::before {
+    @apply translate-x-[100%];
+  }
+}
+
+@layer utilities {
+  /* Custom animations */
+  .animate-float {
+    animation: float 3s ease-in-out infinite;
+  }
+  
+  .animate-pulse-slow {
+    animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+  
+  .animate-shimmer {
+    animation: shimmer 2s linear infinite;
+  }
+}
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}

@@ -1,0 +1,83 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                 String   @id @default(cuid())
+  email              String   @unique
+  passwordHash       String   @map("password_hash")
+  name               String?
+  subscriptionTier   String   @default("free") @map("subscription_tier")
+  subscriptionEndsAt DateTime? @map("subscription_ends_at")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  interactions UserIdeaInteraction[]
+  usage        UserUsage[]
+
+  @@map("users")
+}
+
+model BusinessIdea {
+  id                   String   @id @default(cuid())
+  title                String
+  description          String
+  sourceUrl            String?  @map("source_url")
+  sourceSubreddit      String?  @map("source_subreddit")
+  redditPostId         String?  @map("reddit_post_id")
+  industryTags         String[] @map("industry_tags")
+  difficultyScore      Int?     @map("difficulty_score")
+  marketPotentialScore Int?     @map("market_potential_score")
+  competitionScore     Int?     @map("competition_score")
+  overallScore         Float?   @map("overall_score")
+  sentimentScore       Float?   @map("sentiment_score")
+  upvotes              Int      @default(0)
+  commentsCount        Int      @default(0) @map("comments_count")
+  createdAt            DateTime @default(now()) @map("created_at")
+  processedAt          DateTime? @map("processed_at")
+  isActive             Boolean  @default(true) @map("is_active")
+
+  // Relations
+  interactions UserIdeaInteraction[]
+
+  @@map("business_ideas")
+}
+
+model UserIdeaInteraction {
+  id              String   @id @default(cuid())
+  userId          String   @map("user_id")
+  ideaId          String   @map("idea_id")
+  interactionType String   @map("interaction_type") // 'bookmark', 'like', 'view', 'dismiss'
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  // Relations
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  idea BusinessIdea @relation(fields: [ideaId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, ideaId, interactionType])
+  @@map("user_idea_interactions")
+}
+
+model UserUsage {
+  id         String   @id @default(cuid())
+  userId     String   @map("user_id")
+  monthYear  String   @map("month_year") // Format: 'YYYY-MM'
+  ideasViewed Int     @default(0) @map("ideas_viewed")
+  apiCalls   Int      @default(0) @map("api_calls")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, monthYear])
+  @@map("user_usage")
+}

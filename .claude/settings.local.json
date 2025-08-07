@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir:*)",
+      "Bash(mv:*)",
+      "Bash(move \"apps/api/src/routes/ideas.ts\" \"apps/api/src/routes/ideas_backup.ts\")",
+      "Bash(move \"apps/api/src/routes/ideas_fixed.ts\" \"apps/api/src/routes/ideas.ts\")",
+      "Bash(node:*)",
+      "Bash(npm install)",
+      "Bash(npm run type-check:*)",
+      "Bash(rm:*)",
+      "Bash(npm run build:*)",
+      "Bash(python:*)",
+      "Bash(npm run lint)",
+      "Bash(npm install:*)",
+      "WebFetch(domain:docs.polar.sh)",
+      "Bash(npm run lint:*)",
+      "WebFetch(domain:polar.sh)",
+      "Bash(npx tsc:*)",
+      "Bash(npm audit:*)",
+      "Bash(npm test)",
+      "Bash(npx prisma migrate dev:*)",
+      "Bash(docker-compose up:*)",
+      "Bash(copy .env.development .env)",
+      "Bash(cp:*)",
+      "Bash(DATABASE_URL=\"postgresql://postgres:postgres@localhost:5432/reddit_idea_finder\" npx prisma migrate dev --name init)",
+      "mcp__ide__getDiagnostics",
+      "Bash(code:*)",
+      "Bash(npm run:*)",
+      "Bash(git init:*)",
+      "Bash(git remote add:*)",
+      "Bash(git add:*)"
+    ],
+    "deny": []
+  }
+}

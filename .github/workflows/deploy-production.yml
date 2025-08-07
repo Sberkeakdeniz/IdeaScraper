@@ -1,0 +1,362 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+        - production
+        - staging
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # Quality checks
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test_db
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+
+    - name: Install Node.js dependencies
+      run: npm ci
+
+    - name: Install Python dependencies
+      run: |
+        cd apps/scraper
+        pip install -r requirements.txt
+
+    - name: Run linting
+      run: npm run lint
+
+    - name: Run type checking
+      run: npm run type-check
+
+    - name: Run tests
+      run: npm run test
+      env:
+        DATABASE_URL: postgresql://postgres:postgres@localhost:5432/test_db
+        REDIS_URL: redis://localhost:6379
+        JWT_SECRET: test-jwt-secret-for-ci
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+    - name: Build applications
+      run: npm run build
+
+    - name: Test Polar.sh configuration
+      run: npm run verify-polar-setup
+      env:
+        POLAR_ACCESS_TOKEN: ${{ secrets.POLAR_ACCESS_TOKEN }}
+        POLAR_ORGANIZATION_ID: ${{ secrets.POLAR_ORGANIZATION_ID }}
+        POLAR_WEBHOOK_SECRET: ${{ secrets.POLAR_WEBHOOK_SECRET }}
+        POLAR_PREMIUM_PRICE_ID: ${{ secrets.POLAR_PREMIUM_PRICE_ID }}
+        POLAR_ENTERPRISE_PRICE_ID: ${{ secrets.POLAR_ENTERPRISE_PRICE_ID }}
+
+  # Build and push Docker images
+  build:
+    name: Build Docker Images
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    
+    strategy:
+      matrix:
+        service: [web, api, scraper]
+        
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.service }}
+        tags: |
+          type=ref,event=branch
+          type=sha
+          type=raw,value=latest,enable={{is_default_branch}}
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: apps/${{ matrix.service }}/Dockerfile
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+  # Deploy to staging first
+  deploy-staging:
+    name: Deploy to Staging
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment: staging
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Deploy to staging server
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.STAGING_HOST }}
+        username: ${{ secrets.STAGING_USERNAME }}
+        key: ${{ secrets.STAGING_SSH_KEY }}
+        script: |
+          cd /opt/reddit-idea-finder
+          
+          # Pull latest images
+          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-web:latest
+          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-api:latest  
+          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-scraper:latest
+          
+          # Tag images for docker-compose
+          docker tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-web:latest reddit-idea-finder-web:latest
+          docker tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-api:latest reddit-idea-finder-api:latest
+          docker tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-scraper:latest reddit-idea-finder-scraper:latest
+          
+          # Deploy
+          docker-compose -f docker-compose.staging.yml up -d
+          
+          # Health check
+          sleep 30
+          curl -f http://localhost:3001/health || exit 1
+
+    - name: Run staging smoke tests
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.STAGING_HOST }}
+        username: ${{ secrets.STAGING_USERNAME }}
+        key: ${{ secrets.STAGING_SSH_KEY }}
+        script: |
+          # Test API health
+          curl -f http://localhost:3001/health
+          
+          # Test frontend
+          curl -f http://localhost:3000
+          
+          # Test database connection
+          docker-compose -f /opt/reddit-idea-finder/docker-compose.staging.yml exec -T api npx prisma migrate status
+
+  # Deploy to production (manual approval required)
+  deploy-production:
+    name: Deploy to Production
+    needs: [build, deploy-staging]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production')
+    environment: production
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Create deployment
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const deployment = await github.rest.repos.createDeployment({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            ref: context.sha,
+            environment: 'production',
+            description: 'Deploying to production',
+            auto_merge: false
+          });
+          
+          await github.rest.repos.createDeploymentStatus({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            deployment_id: deployment.data.id,
+            state: 'in_progress',
+            description: 'Deployment in progress'
+          });
+
+    - name: Deploy to production server
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.PRODUCTION_HOST }}
+        username: ${{ secrets.PRODUCTION_USERNAME }}
+        key: ${{ secrets.PRODUCTION_SSH_KEY }}
+        script: |
+          cd /opt/reddit-idea-finder
+          
+          # Run deployment script
+          ./scripts/deploy.sh
+
+    - name: Run production health checks
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.PRODUCTION_HOST }}
+        username: ${{ secrets.PRODUCTION_USERNAME }}
+        key: ${{ secrets.PRODUCTION_SSH_KEY }}
+        script: |
+          # Wait for services to be ready
+          sleep 60
+          
+          # Health checks
+          curl -f https://${{ secrets.PRODUCTION_DOMAIN }}/api/health || exit 1
+          curl -f https://${{ secrets.PRODUCTION_DOMAIN }} || exit 1
+          
+          # Check all services are running
+          docker-compose -f docker-compose.production.yml ps | grep -v Exit || exit 1
+
+    - name: Update deployment status on success
+      if: success()
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const deployments = await github.rest.repos.listDeployments({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            environment: 'production',
+            per_page: 1
+          });
+          
+          if (deployments.data.length > 0) {
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: deployments.data[0].id,
+              state: 'success',
+              environment_url: 'https://${{ secrets.PRODUCTION_DOMAIN }}',
+              description: 'Deployment successful'
+            });
+          }
+
+    - name: Update deployment status on failure
+      if: failure()
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const deployments = await github.rest.repos.listDeployments({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            environment: 'production',
+            per_page: 1
+          });
+          
+          if (deployments.data.length > 0) {
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: deployments.data[0].id,
+              state: 'failure',
+              description: 'Deployment failed'
+            });
+          }
+
+  # Notification
+  notify:
+    name: Send Notifications
+    needs: [deploy-production]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+    - name: Send Slack notification on success
+      if: needs.deploy-production.result == 'success'
+      uses: 8398a7/action-slack@v3
+      with:
+        status: success
+        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        message: |
+          🚀 Production deployment successful!
+          
+          📦 Commit: ${{ github.sha }}
+          👤 Author: ${{ github.actor }}
+          🌐 URL: https://${{ secrets.PRODUCTION_DOMAIN }}
+          
+          Changes: ${{ github.event.head_commit.message }}
+
+    - name: Send Slack notification on failure
+      if: needs.deploy-production.result == 'failure'
+      uses: 8398a7/action-slack@v3
+      with:
+        status: failure
+        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        message: |
+          🚨 Production deployment failed!
+          
+          📦 Commit: ${{ github.sha }}
+          👤 Author: ${{ github.actor }}
+          
+          Please check the deployment logs and take corrective action.
+
+    - name: Send email notification
+      if: always()
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: smtp.gmail.com
+        server_port: 587
+        username: ${{ secrets.EMAIL_USERNAME }}
+        password: ${{ secrets.EMAIL_PASSWORD }}
+        subject: Reddit Idea Finder - Deployment ${{ needs.deploy-production.result }}
+        body: |
+          Deployment to production has ${{ needs.deploy-production.result }}.
+          
+          Repository: ${{ github.repository }}
+          Commit: ${{ github.sha }}
+          Author: ${{ github.actor }}
+          
+          View details: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        to: ${{ secrets.NOTIFICATION_EMAIL }}
+        from: GitHub Actions
