@@ -2,10 +2,8 @@ import express, { Request, Response, NextFunction } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { body, validationResult } from 'express-validator';
-import { PrismaClient } from '@prisma/client';
+import { supabaseAdmin } from '../utils/supabase';
 import { createError } from '../middleware/errorHandler';
-
-const prisma = new PrismaClient();
 
 const router = express.Router();
 
@@ -39,9 +37,12 @@ router.post('/register', [
 
     const { email, password, name } = req.body;
 
-    const existingUser = await prisma.user.findUnique({
-      where: { email },
-    });
+    // Check if user exists
+    const { data: existingUser } = await supabaseAdmin
+      .from('users')
+      .select('*')
+      .eq('email', email)
+      .single();
 
     if (existingUser) {
       throw createError('User already exists', 409);
@@ -49,13 +50,21 @@ router.post('/register', [
 
     const passwordHash = await bcrypt.hash(password, 12);
 
-    const user = await prisma.user.create({
-      data: {
+    // Create user in Supabase
+    const { data: user, error } = await supabaseAdmin
+      .from('users')
+      .insert({
         email,
-        passwordHash,
-        name,
-      },
-    });
+        password: passwordHash,
+        name: name || email.split('@')[0],
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Supabase error:', error);
+      throw createError('Failed to create user', 500);
+    }
 
     const { accessToken, refreshToken } = generateTokens(user.id);
 
@@ -65,7 +74,6 @@ router.post('/register', [
         id: user.id,
         email: user.email,
         name: user.name,
-        subscriptionTier: user.subscriptionTier,
       },
       accessToken,
       refreshToken,
@@ -88,15 +96,18 @@ router.post('/login', [
 
     const { email, password } = req.body;
 
-    const user = await prisma.user.findUnique({
-      where: { email },
-    });
+    // Get user from Supabase
+    const { data: user, error } = await supabaseAdmin
+      .from('users')
+      .select('*')
+      .eq('email', email)
+      .single();
 
-    if (!user) {
+    if (error || !user) {
       throw createError('Invalid credentials', 401);
     }
 
-    const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
+    const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
       throw createError('Invalid credentials', 401);
     }
@@ -109,7 +120,6 @@ router.post('/login', [
         id: user.id,
         email: user.email,
         name: user.name,
-        subscriptionTier: user.subscriptionTier,
       },
       accessToken,
       refreshToken,
@@ -120,31 +130,47 @@ router.post('/login', [
 });
 
 // Refresh token
-router.post('/refresh', [
-  body('refreshToken').exists(),
-], async (req: Request, res: Response, next: NextFunction) => {
+router.post('/refresh', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { refreshToken } = req.body;
 
+    if (!refreshToken) {
+      throw createError('Refresh token required', 400);
+    }
+
     const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET!) as any;
     
-    const user = await prisma.user.findUnique({
-      where: { id: decoded.userId },
-    });
+    // Verify user still exists
+    const { data: user } = await supabaseAdmin
+      .from('users')
+      .select('id')
+      .eq('id', decoded.userId)
+      .single();
 
     if (!user) {
       throw createError('User not found', 404);
     }
 
-    const { accessToken, refreshToken: newRefreshToken } = generateTokens(user.id);
+    const tokens = generateTokens(decoded.userId);
 
     res.json({
-      accessToken,
-      refreshToken: newRefreshToken,
+      message: 'Token refreshed successfully',
+      ...tokens,
     });
   } catch (error) {
-    throw createError('Invalid refresh token', 401);
+    if (error instanceof jwt.TokenExpiredError) {
+      next(createError('Refresh token expired', 401));
+    } else if (error instanceof jwt.JsonWebTokenError) {
+      next(createError('Invalid refresh token', 401));
+    } else {
+      next(error);
+    }
   }
+});
+
+// Logout (optional - mainly for client-side token cleanup)
+router.post('/logout', (req: Request, res: Response) => {
+  res.json({ message: 'Logout successful' });
 });
 
 export default router;

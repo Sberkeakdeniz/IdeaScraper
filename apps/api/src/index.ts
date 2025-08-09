@@ -2,19 +2,22 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import dotenv from 'dotenv';
+import path from 'path';
 import rateLimit from 'express-rate-limit';
 
 import authRoutes from './routes/auth';
 import ideasRoutes from './routes/ideas';
 import usersRoutes from './routes/users';
 import subscriptionsRoutes from './routes/subscriptions';
+import healthRoutes from './routes/health';
 import { errorHandler } from './middleware/errorHandler';
 import { logger } from './utils/logger';
 
-dotenv.config();
+// Load .env from the project root
+dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3004;
 
 // Security middleware
 app.use(helmet());
@@ -37,12 +40,8 @@ app.use(limiter);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'OK', timestamp: new Date().toISOString() });
-});
-
 // API routes
+app.use('/api/health', healthRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/ideas', ideasRoutes);
 app.use('/api/users', usersRoutes);

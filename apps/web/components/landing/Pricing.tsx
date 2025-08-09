@@ -1,10 +1,12 @@
 'use client';
 
+import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
-import { Check } from 'lucide-react';
+import { Check, Loader2 } from 'lucide-react';
 import Link from 'next/link';
+import { useToast } from '@/hooks/use-toast';
 
 const plans = [
   {
@@ -20,6 +22,7 @@ const plans = [
     cta: 'Get Started',
     href: '/register',
     popular: false,
+    priceId: null,
   },
   {
     name: 'Premium',
@@ -35,6 +38,7 @@ const plans = [
     ],
     cta: 'Start Free Trial',
     href: '/register?plan=premium',
+    priceId: 'premium',
     popular: true,
   },
   {
@@ -49,13 +53,61 @@ const plans = [
       'Custom integrations',
       'White-label options',
     ],
-    cta: 'Contact Sales',
+    cta: 'Contact Sales', 
     href: '/contact',
+    priceId: 'enterprise',
     popular: false,
   },
 ];
 
 export function Pricing() {
+  const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
+  const { toast } = useToast();
+
+  const handlePlanSelect = async (plan: typeof plans[0]) => {
+    // If it's the free plan or contact sales, use regular navigation
+    if (!plan.priceId || plan.cta === 'Contact Sales') {
+      return; // Let the Link component handle navigation
+    }
+
+    // Check if user is authenticated
+    const token = localStorage.getItem('token');
+    if (!token) {
+      // Redirect to registration with plan parameter
+      window.location.href = `/register?plan=${plan.priceId}`;
+      return;
+    }
+
+    // User is authenticated, redirect to checkout
+    try {
+      setLoadingPlan(plan.priceId);
+      
+      const response = await fetch('/api/subscriptions/checkout', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ tier: plan.priceId })
+      });
+
+      if (response.ok) {
+        const { checkoutUrl } = await response.json();
+        window.location.href = checkoutUrl;
+      } else {
+        throw new Error('Failed to create checkout session');
+      }
+    } catch (error) {
+      console.error('Error creating checkout:', error);
+      toast({
+        title: "Checkout failed",
+        description: "Failed to start checkout process. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setLoadingPlan(null);
+    }
+  };
   return (
     <section className="relative py-24 sm:py-32 overflow-hidden" id="pricing">
       {/* Background elements */}
@@ -159,14 +211,33 @@ export function Pricing() {
                 </CardContent>
                 
                 <CardFooter className="relative z-10">
-                  <Button 
-                    asChild 
-                    className="w-full" 
-                    variant={plan.popular ? 'gradient' : 'outline'}
-                    size="lg"
-                  >
-                    <Link href={plan.href}>{plan.cta}</Link>
-                  </Button>
+                  {plan.priceId && plan.cta !== 'Contact Sales' ? (
+                    <Button
+                      onClick={() => handlePlanSelect(plan)}
+                      disabled={loadingPlan === plan.priceId}
+                      className="w-full"
+                      variant={plan.popular ? 'gradient' : 'outline'}
+                      size="lg"
+                    >
+                      {loadingPlan === plan.priceId ? (
+                        <>
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                          Processing...
+                        </>
+                      ) : (
+                        plan.cta
+                      )}
+                    </Button>
+                  ) : (
+                    <Button 
+                      asChild 
+                      className="w-full" 
+                      variant={plan.popular ? 'gradient' : 'outline'}
+                      size="lg"
+                    >
+                      <Link href={plan.href}>{plan.cta}</Link>
+                    </Button>
+                  )}
                 </CardFooter>
                 
                 {/* Hover glow effect */}
