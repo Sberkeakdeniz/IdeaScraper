@@ -9,11 +9,12 @@ import {
   TrendingUp, 
   Users, 
   MessageCircle, 
-  Bookmark, 
   ExternalLink,
-  Zap,
   Target,
-  BarChart3
+  BarChart3,
+  DollarSign,
+  Eye,
+  Lightbulb
 } from 'lucide-react';
 
 interface IdeaCardProps {
@@ -21,32 +22,56 @@ interface IdeaCardProps {
     id: string;
     title: string;
     description: string;
-    industryTags: string[];
-    overallScore: number;
-    marketPotentialScore: number;
-    difficultyScore: number;
-    competitionScore: number;
+    sourceSubreddit: string;
     upvotes: number;
     commentsCount: number;
-    sourceSubreddit: string;
-    isBookmarked?: boolean;
+    validationScore: number;
+    marketSize?: string | null;
+    targetAudience?: string | null;
+    monetizationStrategy?: string | null;
+    competitorAnalysis?: string | null;
+    sentiment?: string | null;
+    redditUrl?: string;
   };
-  onBookmark?: (id: string) => void;
   onView?: (id: string) => void;
 }
 
-export function IdeaCard({ idea, onBookmark, onView }: IdeaCardProps) {
+export function IdeaCard({ idea, onView }: IdeaCardProps) {
   const getScoreColor = (score: number) => {
-    if (score >= 4) return 'from-green-400 to-emerald-500';
-    if (score >= 3) return 'from-blue-400 to-indigo-500';
-    if (score >= 2) return 'from-yellow-400 to-orange-500';
+    if (score >= 8) return 'from-green-400 to-emerald-500';
+    if (score >= 6) return 'from-blue-400 to-indigo-500';
+    if (score >= 4) return 'from-yellow-400 to-orange-500';
     return 'from-red-400 to-red-500';
   };
 
-  const getDifficultyLabel = (score: number) => {
-    if (score <= 2) return 'Easy';
-    if (score <= 3) return 'Medium';
-    return 'Hard';
+  const getSentimentColor = (sentiment: string | null | undefined) => {
+    if (!sentiment) return 'bg-gray-500/10 text-gray-400';
+    switch (sentiment.toLowerCase()) {
+      case 'very positive': return 'bg-green-500/10 text-green-400';
+      case 'positive': return 'bg-blue-500/10 text-blue-400';
+      case 'neutral': return 'bg-gray-500/10 text-gray-400';
+      case 'negative': return 'bg-orange-500/10 text-orange-400';
+      case 'very negative': return 'bg-red-500/10 text-red-400';
+      default: return 'bg-gray-500/10 text-gray-400';
+    }
+  };
+
+  const getSentimentIcon = (sentiment: string | null | undefined) => {
+    if (!sentiment) return '😐';
+    switch (sentiment.toLowerCase()) {
+      case 'very positive': return '🚀';
+      case 'positive': return '😊';
+      case 'neutral': return '😐';
+      case 'negative': return '😕';
+      case 'very negative': return '😞';
+      default: return '😐';
+    }
+  };
+
+  const handleViewReddit = () => {
+    if (idea.redditUrl) {
+      window.open(idea.redditUrl, '_blank');
+    }
   };
 
   return (
@@ -69,15 +94,18 @@ export function IdeaCard({ idea, onBookmark, onView }: IdeaCardProps) {
                 <Badge variant="outline" className="text-xs px-2 py-1 bg-indigo-500/10 border-indigo-500/20 text-indigo-400">
                   r/{idea.sourceSubreddit}
                 </Badge>
+                <Badge className={`text-xs px-2 py-1 ${getSentimentColor(idea.sentiment)}`}>
+                  {getSentimentIcon(idea.sentiment)} {idea.sentiment || 'Unknown'}
+                </Badge>
               </div>
             </div>
             
-            {/* Overall Score */}
+            {/* Validation Score */}
             <div className="flex-none ml-4">
               <div className="relative w-16 h-16">
                 <div className="w-full h-full rounded-full bg-gradient-to-r from-slate-800 to-slate-700 flex items-center justify-center">
-                  <div className={`w-12 h-12 rounded-full bg-gradient-to-r ${getScoreColor(idea.overallScore)} flex items-center justify-center shadow-glow`}>
-                    <span className="text-white font-bold text-sm">{idea.overallScore.toFixed(1)}</span>
+                  <div className={`w-12 h-12 rounded-full bg-gradient-to-r ${getScoreColor(idea.validationScore)} flex items-center justify-center shadow-glow`}>
+                    <span className="text-white font-bold text-sm">{idea.validationScore.toFixed(1)}</span>
                   </div>
                 </div>
                 <div className="absolute -top-1 -right-1 w-6 h-6 bg-gradient-to-r from-indigo-400 to-purple-400 rounded-full flex items-center justify-center animate-pulse-glow">
@@ -85,24 +113,6 @@ export function IdeaCard({ idea, onBookmark, onView }: IdeaCardProps) {
                 </div>
               </div>
             </div>
-          </div>
-
-          {/* Industry tags */}
-          <div className="flex flex-wrap gap-2 mt-3">
-            {idea.industryTags.slice(0, 3).map((tag) => (
-              <Badge 
-                key={tag} 
-                variant="outline" 
-                className="text-xs px-2 py-1 bg-white/5 border-white/10 hover:bg-white/10 transition-colors"
-              >
-                {tag}
-              </Badge>
-            ))}
-            {idea.industryTags.length > 3 && (
-              <Badge variant="outline" className="text-xs px-2 py-1 bg-white/5 border-white/10">
-                +{idea.industryTags.length - 3}
-              </Badge>
-            )}
           </div>
         </CardHeader>
 
@@ -112,38 +122,42 @@ export function IdeaCard({ idea, onBookmark, onView }: IdeaCardProps) {
             {idea.description}
           </p>
 
-          {/* Metrics */}
-          <div className="grid grid-cols-3 gap-4 mb-4">
-            <div className="text-center">
-              <div className="flex items-center justify-center gap-1 mb-1">
+          {/* AI Analysis Highlights */}
+          {idea.marketSize && (
+            <div className="mb-4 p-3 bg-white/5 rounded-lg border border-white/10">
+              <div className="flex items-center gap-2 mb-2">
                 <Target className="h-4 w-4 text-blue-400" />
-                <span className="text-xs text-muted-foreground">Market</span>
+                <span className="text-sm font-medium text-blue-400">Market Analysis</span>
               </div>
-              <div className={`text-sm font-semibold bg-gradient-to-r ${getScoreColor(idea.marketPotentialScore)} bg-clip-text text-transparent`}>
-                {idea.marketPotentialScore}/5
-              </div>
+              <p className="text-xs text-muted-foreground line-clamp-2">
+                {idea.marketSize}
+              </p>
             </div>
-            
-            <div className="text-center">
-              <div className="flex items-center justify-center gap-1 mb-1">
-                <Zap className="h-4 w-4 text-yellow-400" />
-                <span className="text-xs text-muted-foreground">Difficulty</span>
+          )}
+
+          {idea.targetAudience && (
+            <div className="mb-4 p-3 bg-white/5 rounded-lg border border-white/10">
+              <div className="flex items-center gap-2 mb-2">
+                <Users className="h-4 w-4 text-purple-400" />
+                <span className="text-sm font-medium text-purple-400">Target Audience</span>
               </div>
-              <div className="text-sm font-semibold">
-                {getDifficultyLabel(idea.difficultyScore)}
-              </div>
+              <p className="text-xs text-muted-foreground line-clamp-2">
+                {idea.targetAudience}
+              </p>
             </div>
-            
-            <div className="text-center">
-              <div className="flex items-center justify-center gap-1 mb-1">
-                <BarChart3 className="h-4 w-4 text-purple-400" />
-                <span className="text-xs text-muted-foreground">Competition</span>
+          )}
+
+          {idea.monetizationStrategy && (
+            <div className="mb-4 p-3 bg-white/5 rounded-lg border border-white/10">
+              <div className="flex items-center gap-2 mb-2">
+                <DollarSign className="h-4 w-4 text-green-400" />
+                <span className="text-sm font-medium text-green-400">Monetization</span>
               </div>
-              <div className={`text-sm font-semibold bg-gradient-to-r ${getScoreColor(5 - idea.competitionScore)} bg-clip-text text-transparent`}>
-                {idea.competitionScore}/5
-              </div>
+              <p className="text-xs text-muted-foreground line-clamp-2">
+                {idea.monetizationStrategy}
+              </p>
             </div>
-          </div>
+          )}
 
           {/* Engagement stats */}
           <div className="flex items-center justify-between text-xs text-muted-foreground mb-4">
@@ -167,20 +181,17 @@ export function IdeaCard({ idea, onBookmark, onView }: IdeaCardProps) {
               className="flex-1 glass border-white/20 hover:bg-white/5"
               onClick={() => onView?.(idea.id)}
             >
-              <ExternalLink className="h-4 w-4 mr-2" />
-              View Details
+              <Eye className="h-4 w-4 mr-2" />
+              Full Analysis
             </Button>
             
             <Button
-              variant={idea.isBookmarked ? "default" : "outline"}
+              variant="outline"
               size="sm"
-              className={`px-3 ${idea.isBookmarked 
-                ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white' 
-                : 'glass border-white/20 hover:bg-white/5'
-              }`}
-              onClick={() => onBookmark?.(idea.id)}
+              className="px-3 glass border-white/20 hover:bg-white/5"
+              onClick={handleViewReddit}
             >
-              <Bookmark className={`h-4 w-4 ${idea.isBookmarked ? 'fill-current' : ''}`} />
+              <ExternalLink className="h-4 w-4" />
             </Button>
           </div>
         </CardContent>

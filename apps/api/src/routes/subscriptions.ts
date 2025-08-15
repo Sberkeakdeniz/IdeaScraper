@@ -1,12 +1,7 @@
 import express, { Response, NextFunction } from 'express';
 import { body } from 'express-validator';
-import { PrismaClient } from '@prisma/client';
-import { Polar } from '@polar-sh/sdk';
-
-const prisma = new PrismaClient();
-const polar = new Polar({
-  accessToken: process.env.POLAR_ACCESS_TOKEN,
-});
+import { supabaseAdmin } from '../utils/supabase';
+import { createStripeClient } from '../utils/stripe-config';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import { createError } from '../middleware/errorHandler';
 
@@ -17,26 +12,26 @@ router.get('/status', authenticateToken, async (req: AuthRequest, res: Response,
   try {
     const userId = req.user!.id;
 
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: {
-        subscriptionTier: true,
-        subscriptionEndsAt: true,
-      },
-    });
+    const { data: user, error } = await supabaseAdmin
+      .from('users')
+      .select('subscription_tier, subscription_ends_at, stripe_customer_id, stripe_subscription_id')
+      .eq('id', userId)
+      .single();
 
-    if (!user) {
+    if (error || !user) {
       throw createError('User not found', 404);
     }
 
-    const isActive = user.subscriptionTier !== 'free' && 
-      (!user.subscriptionEndsAt || user.subscriptionEndsAt > new Date());
+    const isActive = user.subscription_tier !== 'free' && 
+      (!user.subscription_ends_at || new Date(user.subscription_ends_at) > new Date());
 
     res.json({
-      tier: user.subscriptionTier,
+      tier: user.subscription_tier || 'free',
       isActive,
-      endsAt: user.subscriptionEndsAt,
-      features: getFeaturesByTier(user.subscriptionTier),
+      endsAt: user.subscription_ends_at,
+      stripeCustomerId: user.stripe_customer_id,
+      stripeSubscriptionId: user.stripe_subscription_id,
+      features: getFeaturesByTier(user.subscription_tier || 'free'),
     });
   } catch (error) {
     next(error);
@@ -49,21 +44,19 @@ router.get('/usage', authenticateToken, async (req: AuthRequest, res: Response, 
     const userId = req.user!.id;
     const currentMonth = new Date().toISOString().slice(0, 7);
 
-    const usage = await prisma.userUsage.findUnique({
-      where: {
-        userId_monthYear: {
-          userId,
-          monthYear: currentMonth,
-        },
-      },
-    });
+    const { data: usage } = await supabaseAdmin
+      .from('user_usage')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('month_year', currentMonth)
+      .single();
 
     const limits = getLimitsByTier(req.user!.subscriptionTier);
 
     res.json({
       current: {
-        ideasViewed: usage?.ideasViewed || 0,
-        apiCalls: usage?.apiCalls || 0,
+        ideasViewed: usage?.ideas_viewed || 0,
+        apiCalls: usage?.api_calls || 0,
       },
       limits,
       resetDate: getNextMonthStart(),
@@ -73,7 +66,7 @@ router.get('/usage', authenticateToken, async (req: AuthRequest, res: Response, 
   }
 });
 
-// Create checkout session with polar.sh
+// Create checkout session with Stripe
 router.post('/checkout', authenticateToken, [
   body('tier').isIn(['premium', 'enterprise']),
 ], async (req: AuthRequest, res: Response, next: NextFunction) => {
@@ -82,66 +75,114 @@ router.post('/checkout', authenticateToken, [
     const userId = req.user!.id;
     const user = req.user!;
 
-    if (!process.env.POLAR_ORGANIZATION_ID) {
-      throw createError('Polar organization ID not configured', 500);
-    }
+    const stripe = createStripeClient();
+    
+    // Get or create Stripe customer
+    let customerId = await getStripeCustomerId(userId, user.email);
 
-    // Create checkout session with polar.sh
-    const checkoutSession = await polar.checkouts.create({
-      products: [getPolarPriceIdByTier(tier)],
-      successUrl: `${process.env.FRONTEND_URL}/dashboard?checkout=success`,
-      customerEmail: user.email,
+    // Create checkout session
+    const session = await stripe.checkout.sessions.create({
+      customer: customerId,
+      payment_method_types: ['card'],
+      line_items: [
+        {
+          price: getStripePriceIdByTier(tier),
+          quantity: 1,
+        },
+      ],
+      mode: 'subscription',
+      success_url: `${process.env.FRONTEND_URL}/dashboard?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.FRONTEND_URL}/dashboard?checkout=canceled`,
       metadata: {
-        userId: userId.toString(),
+        userId: userId,
         tier,
+        email: user.email,
       },
     });
 
     res.json({
-      checkoutUrl: checkoutSession.url,
+      checkoutUrl: session.url,
       tier,
       price: getPriceByTier(tier),
-      sessionId: checkoutSession.id,
+      sessionId: session.id,
     });
   } catch (error) {
-    console.error('Polar checkout creation failed:', error);
+    console.error('Stripe checkout creation failed:', error);
     next(createError('Failed to create checkout session', 500));
   }
 });
 
-// Handle webhook from polar.sh
-router.post('/webhook', async (req: express.Request, res: Response, next: NextFunction) => {
+// Create customer portal session
+router.post('/portal', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const webhookSecret = process.env.POLAR_WEBHOOK_SECRET;
+    const userId = req.user!.id;
+    const user = req.user!;
+
+    const stripe = createStripeClient();
+    
+    // Get or create Stripe customer
+    let customerId = await getStripeCustomerId(userId, user.email);
+
+    // Create portal session
+    const portalSession = await stripe.billingPortal.sessions.create({
+      customer: customerId,
+      return_url: `${process.env.FRONTEND_URL}/dashboard`,
+    });
+
+    res.json({
+      url: portalSession.url,
+    });
+  } catch (error) {
+    console.error('Stripe portal creation failed:', error);
+    next(createError('Failed to create customer portal session', 500));
+  }
+});
+
+// Handle webhook from Stripe
+router.post('/webhook', express.raw({ type: 'application/json' }), async (req: express.Request, res: Response, next: NextFunction) => {
+  try {
+    const stripe = createStripeClient();
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+    
     if (!webhookSecret) {
       throw createError('Webhook secret not configured', 500);
     }
 
-    // Verify webhook signature (basic implementation)
-    const signature = req.headers['polar-webhook-signature'] as string;
-    if (!signature) {
-      throw createError('Missing webhook signature', 400);
+    const sig = req.headers['stripe-signature'] as string;
+    if (!sig) {
+      throw createError('Missing Stripe signature', 400);
     }
 
-    const event = req.body;
-    console.log('Received polar.sh webhook:', event.type);
+    let event;
+    try {
+      event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+    } catch (err: any) {
+      console.error('Webhook signature verification failed:', err.message);
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    console.log('Received Stripe webhook:', event.type);
 
     switch (event.type) {
-      case 'checkout.created':
-        console.log('Checkout session created:', event.data.id);
+      case 'checkout.session.completed':
+        await handleCheckoutCompleted(event.data.object);
         break;
 
-      case 'order.created':
-        await handleOrderCreated(event.data);
+      case 'customer.subscription.created':
+      case 'customer.subscription.updated':
+        await handleSubscriptionUpdate(event.data.object);
         break;
 
-      case 'subscription.created':
-      case 'subscription.updated':
-        await handleSubscriptionUpdate(event.data);
+      case 'customer.subscription.deleted':
+        await handleSubscriptionDeleted(event.data.object);
         break;
 
-      case 'subscription.cancelled':
-        await handleSubscriptionCancelled(event.data);
+      case 'invoice.payment_succeeded':
+        await handlePaymentSucceeded(event.data.object);
+        break;
+
+      case 'invoice.payment_failed':
+        await handlePaymentFailed(event.data.object);
         break;
 
       default:
@@ -154,6 +195,36 @@ router.post('/webhook', async (req: express.Request, res: Response, next: NextFu
     next(error);
   }
 });
+
+async function getStripeCustomerId(userId: string, email: string): Promise<string> {
+  // Check if user already has a Stripe customer ID
+  const { data: user } = await supabaseAdmin
+    .from('users')
+    .select('stripe_customer_id')
+    .eq('id', userId)
+    .single();
+
+  if (user?.stripe_customer_id) {
+    return user.stripe_customer_id;
+  }
+
+  // Create new Stripe customer
+  const stripe = createStripeClient();
+  const customer = await stripe.customers.create({
+    email,
+    metadata: {
+      userId: userId.toString(),
+    },
+  });
+
+  // Save customer ID to database
+  await supabaseAdmin
+    .from('users')
+    .update({ stripe_customer_id: customer.id })
+    .eq('id', userId);
+
+  return customer.id;
+}
 
 function getFeaturesByTier(tier: string) {
   const features = {
@@ -209,10 +280,10 @@ function getPriceByTier(tier: string) {
   return prices[tier as keyof typeof prices] || 0;
 }
 
-function getPolarPriceIdByTier(tier: string) {
+function getStripePriceIdByTier(tier: string) {
   const priceIds = {
-    premium: process.env.POLAR_PREMIUM_PRICE_ID,
-    enterprise: process.env.POLAR_ENTERPRISE_PRICE_ID,
+    premium: process.env.STRIPE_PREMIUM_PRICE_ID,
+    enterprise: process.env.STRIPE_ENTERPRISE_PRICE_ID,
   };
 
   const priceId = priceIds[tier as keyof typeof priceIds];
@@ -227,83 +298,122 @@ function getNextMonthStart() {
   return new Date(now.getFullYear(), now.getMonth() + 1, 1);
 }
 
-async function handleOrderCreated(orderData: any) {
+async function handleCheckoutCompleted(session: any) {
   try {
-    const userId = orderData.metadata?.userId;
-    const tier = orderData.metadata?.tier;
+    const userId = session.metadata?.userId;
+    const tier = session.metadata?.tier;
 
     if (!userId || !tier) {
-      console.error('Missing userId or tier in order metadata');
+      console.error('Missing userId or tier in checkout session metadata');
       return;
     }
 
-    // Update user subscription status
-    await prisma.user.update({
-      where: { id: userId },
-      data: {
-        subscriptionTier: tier,
-        subscriptionEndsAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now
-      },
-    });
+    // Update user with subscription info
+    await supabaseAdmin
+      .from('users')
+      .update({
+        subscription_tier: tier,
+        stripe_customer_id: session.customer,
+      })
+      .eq('id', userId);
 
-    console.log(`Updated user ${userId} to ${tier} tier`);
+    console.log(`Checkout completed for user ${userId} - ${tier} tier`);
   } catch (error) {
-    console.error('Failed to handle order created:', error);
+    console.error('Failed to handle checkout completion:', error);
   }
 }
 
-async function handleSubscriptionUpdate(subscriptionData: any) {
+async function handleSubscriptionUpdate(subscription: any) {
   try {
-    const userId = subscriptionData.metadata?.userId;
-    const tier = subscriptionData.metadata?.tier;
-
-    if (!userId || !tier) {
-      console.error('Missing userId or tier in subscription metadata');
+    const stripe = createStripeClient();
+    const customer = await stripe.customers.retrieve(subscription.customer);
+    
+    if (customer.deleted) {
+      console.error('Customer was deleted');
       return;
     }
 
-    const endsAt = subscriptionData.current_period_end ? 
-      new Date(subscriptionData.current_period_end * 1000) : 
-      new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const userId = (customer as any).metadata?.userId;
+    if (!userId) {
+      console.error('Missing userId in customer metadata');
+      return;
+    }
 
-    await prisma.user.update({
-      where: { id: userId },
-      data: {
-        subscriptionTier: tier,
-        subscriptionEndsAt: endsAt,
-      },
-    });
+    const isActive = subscription.status === 'active' || subscription.status === 'trialing';
+    const currentPeriodEnd = new Date(subscription.current_period_end * 1000);
 
-    console.log(`Updated subscription for user ${userId} to ${tier}, ends at ${endsAt}`);
+    // Determine tier based on price ID
+    const priceId = subscription.items.data[0]?.price.id;
+    let tier = 'free';
+    
+    if (priceId === process.env.STRIPE_PREMIUM_PRICE_ID) {
+      tier = 'premium';
+    } else if (priceId === process.env.STRIPE_ENTERPRISE_PRICE_ID) {
+      tier = 'enterprise';
+    }
+
+    await supabaseAdmin
+      .from('users')
+      .update({
+        subscription_tier: isActive ? tier : 'free',
+        subscription_ends_at: currentPeriodEnd.toISOString(),
+        stripe_subscription_id: subscription.id,
+      })
+      .eq('id', userId);
+
+    console.log(`Updated subscription for user ${userId} to ${tier}, active: ${isActive}, ends: ${currentPeriodEnd}`);
   } catch (error) {
     console.error('Failed to handle subscription update:', error);
   }
 }
 
-async function handleSubscriptionCancelled(subscriptionData: any) {
+async function handleSubscriptionDeleted(subscription: any) {
   try {
-    const userId = subscriptionData.metadata?.userId;
-
-    if (!userId) {
-      console.error('Missing userId in subscription metadata');
+    const stripe = createStripeClient();
+    const customer = await stripe.customers.retrieve(subscription.customer);
+    
+    if (customer.deleted) {
+      console.error('Customer was deleted');
       return;
     }
 
-    // Set subscription to end at the current period end
-    const endsAt = subscriptionData.current_period_end ? 
-      new Date(subscriptionData.current_period_end * 1000) : 
-      new Date();
+    const userId = (customer as any).metadata?.userId;
+    if (!userId) {
+      console.error('Missing userId in customer metadata');
+      return;
+    }
 
-    await prisma.user.update({
-      where: { id: userId },
-      data: {
-        subscriptionEndsAt: endsAt,
-      },
-    });
+    // Set subscription to free tier
+    await supabaseAdmin
+      .from('users')
+      .update({
+        subscription_tier: 'free',
+        subscription_ends_at: new Date().toISOString(),
+      })
+      .eq('id', userId);
 
-    console.log(`Scheduled subscription cancellation for user ${userId} at ${endsAt}`);
+    console.log(`Subscription deleted for user ${userId}`);
   } catch (error) {
-    console.error('Failed to handle subscription cancellation:', error);
+    console.error('Failed to handle subscription deletion:', error);
+  }
+}
+
+async function handlePaymentSucceeded(invoice: any) {
+  try {
+    console.log(`Payment succeeded for invoice ${invoice.id}`);
+    // Additional logic if needed when payment succeeds
+  } catch (error) {
+    console.error('Failed to handle payment success:', error);
+  }
+}
+
+async function handlePaymentFailed(invoice: any) {
+  try {
+    console.log(`Payment failed for invoice ${invoice.id}`);
+    // Additional logic if needed when payment fails
+    // Could send email notification, update subscription status, etc.
+  } catch (error) {
+    console.error('Failed to handle payment failure:', error);
   }
 }
 
